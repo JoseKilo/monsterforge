@@ -3,9 +3,11 @@ from django.urls import reverse
 from django.contrib.auth import get_user_model, get_user
 from django.contrib.auth.models import Group
 from unittest.mock import patch
+import json
 import numpy as np
 from paperminis.generate_minis import MiniBuilder, crop_whitespace
 from paperminis.models import Bestiary, Creature, CreatureQuantity, PrintSettings
+from paperminis.utils import handle_json
 # Create your tests here.
 
 class QuickViewTests(TestCase):
@@ -195,3 +197,48 @@ class MiniBuilderCropTests(TestCase):
         ps.save()
         ps.refresh_from_db()
         self.assertTrue(ps.crop_whitespace)
+
+
+class HandleJsonTests(TestCase):
+    """Testing the JSON import helper."""
+
+    def setUp(self):
+        self.group = Group(name='temp')
+        self.group.save()
+        self.user = get_user_model().objects.create_user(email='test@email.com', password='MyPassword1234$')
+
+    def _upload(self, data):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        payload = json.dumps(data).encode('utf-8')
+        f = {'file': SimpleUploadedFile('creatures.json', payload)}
+        return handle_json(f, self.user)
+
+    def test_fresh_import_creates_creatures(self):
+        data = {
+            "orc": {"img_url": "https://example.com/orc.jpg", "name": "orc", "creature_size": "Medium"},
+            "dragon": {"img_url": "https://example.com/dragon.jpg", "name": "dragon", "creature_size": "Gargantuan"},
+        }
+        skipped = self._upload(data)
+        self.assertEqual(skipped, 0)
+        self.assertEqual(Creature.objects.filter(owner=self.user).count(), 2)
+
+    def test_import_with_existing_creature_does_not_crash(self):
+        Creature.objects.create(owner=self.user, name="orc", img_url="https://example.com/orc.jpg", size="M")
+        data = {
+            "orc": {"img_url": "https://example.com/orc.jpg", "name": "orc", "creature_size": "Medium"},
+            "goblin": {"img_url": "https://example.com/goblin.jpg", "name": "goblin", "creature_size": "Small"},
+        }
+        skipped = self._upload(data)
+        # existing creature is skipped, new one is created
+        self.assertEqual(skipped, 1)
+        self.assertEqual(Creature.objects.filter(owner=self.user).count(), 2)
+
+    def test_import_updates_size_of_existing_creature(self):
+        Creature.objects.create(owner=self.user, name="orc", img_url="https://example.com/orc.jpg", size="L")
+        data = {
+            "orc": {"img_url": "https://example.com/orc.jpg", "name": "orc", "creature_size": "Medium"},
+        }
+        skipped = self._upload(data)
+        self.assertEqual(skipped, 0)
+        creature = Creature.objects.get(owner=self.user, name="orc")
+        self.assertEqual(creature.size, "M")

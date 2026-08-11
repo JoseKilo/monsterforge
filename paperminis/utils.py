@@ -65,7 +65,7 @@ def handle_json(f, user):
 
         # check if unique
         if name_url in current_name_url:
-            full_tup = (name, img_url, short_size, cr, short_type)
+            full_tup = (name, img_url, short_size)
             if full_tup in current_full:
                 # excact duplicate
                 skip += 1
