@@ -15,6 +15,50 @@ from .items import Item
 logger = logging.getLogger("django")
 
 
+def crop_whitespace(img, threshold=15, margin=None, min_content_ratio=0.05):
+    """
+    Detect and crop the uniform border around the actual content of an image.
+
+    The border color is derived from the edges of the image, which works for
+    both flattened transparent PNGs (whose background was replaced with the
+    chosen background color) and regular images with a white background.
+
+    Returns the cropped image, or the original image if cropping is not safe.
+    """
+    if img.shape[0] < 3 or img.shape[1] < 3:
+        return img
+
+    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+
+    # derive the border color from the four edges
+    edge = np.concatenate((gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]))
+    border_color = int(np.median(edge))
+
+    # mask all pixels that differ from the border color
+    diff = cv.absdiff(gray, border_color)
+    _, mask = cv.threshold(diff, threshold, 255, cv.THRESH_BINARY)
+
+    points = cv.findNonZero(mask)
+    if points is None:
+        return img
+
+    x, y, w, h = cv.boundingRect(points)
+
+    # safety: don't crop if the content is a tiny fraction of the image
+    total = img.shape[0] * img.shape[1]
+    if (w * h) < min_content_ratio * total:
+        return img
+
+    if margin is None:
+        margin = max(1, int(round(0.02 * max(w, h))))
+    x = max(x - margin, 0)
+    y = max(y - margin, 0)
+    x2 = min(x + w + margin, img.shape[1])
+    y2 = min(y + h + margin, img.shape[0])
+
+    return img[y:y2, x:x2]
+
+
 class MiniBuilder:
 
     def __init__(self):
@@ -36,6 +80,7 @@ class MiniBuilder:
         self.base_shape = None
         self.fixed_height = False
         self.darken = None
+        self.crop_whitespace = False
         self.font = cv.FONT_HERSHEY_SIMPLEX
         self.paper_format = None
         self.canvas = None
@@ -77,7 +122,8 @@ class MiniBuilder:
                       enumerate=False,
                       force_name='no_force',
                       fixed_height=False,
-                      darken=0):
+                      darken=0,
+                      crop_whitespace=False):
 
         self.print_margin = print_margin
         self.dpmm = 10  # not fully supported setting yet, leave at 10
@@ -87,6 +133,7 @@ class MiniBuilder:
         self.base_shape = base_shape
         self.fixed_height = fixed_height
         self.darken = darken
+        self.crop_whitespace = crop_whitespace
         self.paper_format = paper_format
         paper = {'a3': np.array([297, 420]),
                  'a4': np.array([210, 297]),
@@ -307,6 +354,10 @@ class MiniBuilder:
             color = m_img[:, :, :3]
             color[bmask] = background_color
             m_img = color
+
+        # crop unnecessary whitespace to increase mini real estate
+        if self.crop_whitespace:
+            m_img = crop_whitespace(m_img)
 
         # get Textbox height
         namebox_height = n_img.shape[0]

@@ -2,7 +2,10 @@ from django.test import TestCase
 from django.urls import reverse
 from django.contrib.auth import get_user_model, get_user
 from django.contrib.auth.models import Group
-from paperminis.models import Bestiary, Creature, CreatureQuantity
+from unittest.mock import patch
+import numpy as np
+from paperminis.generate_minis import MiniBuilder, crop_whitespace
+from paperminis.models import Bestiary, Creature, CreatureQuantity, PrintSettings
 # Create your tests here.
 
 class QuickViewTests(TestCase):
@@ -120,3 +123,75 @@ class BestiaryCreaturesTests(TestCase):
         self.assertEqual(Creature.objects.all().count(), 10)
         self.assertEqual(Bestiary.objects.all().count(), 1)
         self.assertEqual(Bestiary.objects.first().name, "TEST-Forge ALL + Many")
+
+
+class CropWhitespaceTests(TestCase):
+    """Testing the whitespace cropping helper."""
+
+    def _bordered(self, size=400, content=100):
+        img = np.full((size, size, 3), 255, np.uint8)
+        start = (size - content) // 2
+        img[start:start + content, start:start + content] = (0, 0, 255)
+        return img
+
+    def test_crops_uniform_border(self):
+        img = self._bordered()
+        out = crop_whitespace(img)
+        self.assertLess(out.shape[0], img.shape[0])
+        self.assertLess(out.shape[1], img.shape[1])
+
+    def test_solid_image_unchanged(self):
+        img = np.zeros((200, 200, 3), np.uint8)
+        out = crop_whitespace(img)
+        self.assertEqual(out.shape, img.shape)
+
+    def test_tiny_content_unchanged(self):
+        img = np.full((400, 400, 3), 255, np.uint8)
+        img[200, 200] = (0, 0, 0)
+        out = crop_whitespace(img)
+        self.assertEqual(out.shape, img.shape)
+
+
+class MiniBuilderCropTests(TestCase):
+    """Testing that enabling whitespace cropping increases mini real estate."""
+
+    def setUp(self):
+        self.group = Group(name='temp')
+        self.group.save()
+        self.user = get_user_model().objects.create_user(email='test@email.com', password='MyPassword1234$')
+
+    def _bordered_img(self, size=400, content=100):
+        img = np.full((size, size, 3), 255, np.uint8)
+        start = (size - content) // 2
+        img[start:start + content, start:start + content] = (0, 0, 255)
+        return img
+
+    @patch('paperminis.generate_minis.download_image')
+    def test_crop_flag_increases_content(self, mock_download):
+        mock_download.return_value = self._bordered_img()
+        creature = Creature.objects.create(
+            name="Test", owner=self.user,
+            img_url="https://example.com/img.jpg",
+            size="M", position="bottom", show_name=False,
+        )
+
+        builder = MiniBuilder()
+        builder.load_settings(crop_whitespace=False)
+        mini_no_crop = builder.build_mini(creature)
+        self.assertIsNot(mini_no_crop, 'Object is not a Creature.')
+
+        builder = MiniBuilder()
+        builder.load_settings(crop_whitespace=True)
+        mini_crop = builder.build_mini(creature)
+
+        red_no_crop = int(np.sum(np.all(mini_no_crop == (0, 0, 255), axis=2)))
+        red_crop = int(np.sum(np.all(mini_crop == (0, 0, 255), axis=2)))
+        self.assertGreater(red_crop, red_no_crop)
+
+    def test_printsettings_crop_whitespace_default(self):
+        ps = PrintSettings.objects.create(user=self.user)
+        self.assertFalse(ps.crop_whitespace)
+        ps.crop_whitespace = True
+        ps.save()
+        ps.refresh_from_db()
+        self.assertTrue(ps.crop_whitespace)
